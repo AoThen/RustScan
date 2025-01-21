@@ -69,9 +69,18 @@ pub fn parse_addresses(input: &Opts) -> Vec<IpAddr> {
         }
     }
 
+    // Finally, craft a list of addresses to be excluded from the scan.
+    let mut excluded_ips: Vec<IpAddr> = Vec::new();
+    if let Some(exclude_addresses) = &input.exclude_addresses {
+        for addr in exclude_addresses {
+            excluded_ips.extend(parse_address(addr, &backup_resolver));
+        }
+    }
+
     ips.into_iter()
         .collect::<BTreeSet<_>>()
         .into_iter()
+        .filter(|ip| !excluded_ips.contains(ip))
         .collect()
 }
 
@@ -193,8 +202,11 @@ mod tests {
 
     #[test]
     fn parse_correct_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()];
+        let opts = Opts {
+            addresses: vec!["127.0.0.1".to_owned(), "192.168.0.0/30".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
 
         assert_eq!(
@@ -210,9 +222,64 @@ mod tests {
     }
 
     #[test]
-    fn parse_correct_host_addresses() {
+    fn parse_addresses_with_address_exclusions() {
         let mut opts = Opts::default();
-        opts.addresses = vec!["google.com".to_owned()];
+        opts.addresses = vec!["192.168.0.0/30".to_owned()];
+        opts.exclude_addresses = Some(vec!["192.168.0.1".to_owned()]);
+        let ips = parse_addresses(&opts);
+
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 0),
+                Ipv4Addr::new(192, 168, 0, 2),
+                Ipv4Addr::new(192, 168, 0, 3)
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_addresses_with_cidr_exclusions() {
+        let mut opts = Opts::default();
+        opts.addresses = vec!["192.168.0.0/29".to_owned()];
+        opts.exclude_addresses = Some(vec!["192.168.0.0/30".to_owned()]);
+        let ips = parse_addresses(&opts);
+
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 4),
+                Ipv4Addr::new(192, 168, 0, 5),
+                Ipv4Addr::new(192, 168, 0, 6),
+                Ipv4Addr::new(192, 168, 0, 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_addresses_with_incorrect_address_exclusions() {
+        let mut opts = Opts::default();
+        opts.addresses = vec!["192.168.0.0/30".to_owned()];
+        opts.exclude_addresses = Some(vec!["192.168.0.1".to_owned(), "im_wrong".to_owned()]);
+        let ips = parse_addresses(&opts);
+
+        assert_eq!(
+            ips,
+            [
+                Ipv4Addr::new(192, 168, 0, 0),
+                Ipv4Addr::new(192, 168, 0, 2),
+                Ipv4Addr::new(192, 168, 0, 3)
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_correct_host_addresses() {
+        let opts = Opts {
+            addresses: vec!["google.com".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
 
         assert_eq!(ips.len(), 1);
@@ -220,8 +287,11 @@ mod tests {
 
     #[test]
     fn parse_correct_and_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()];
+        let opts = Opts {
+            addresses: vec!["127.0.0.1".to_owned(), "im_wrong".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
 
         assert_eq!(ips, [Ipv4Addr::new(127, 0, 0, 1),]);
@@ -229,43 +299,61 @@ mod tests {
 
     #[test]
     fn parse_incorrect_addresses() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()];
+        let opts = Opts {
+            addresses: vec!["im_wrong".to_owned(), "300.10.1.1".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
 
         assert!(ips.is_empty());
     }
+
     #[test]
     fn parse_hosts_file_and_incorrect_hosts() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/hosts.txt".to_owned()];
+        let opts = Opts {
+            addresses: vec!["fixtures/hosts.txt".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
+
         assert_eq!(ips.len(), 3);
     }
 
     #[test]
     fn parse_empty_hosts_file() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/empty_hosts.txt".to_owned()];
+        let opts = Opts {
+            addresses: vec!["fixtures/empty_hosts.txt".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
+
         assert_eq!(ips.len(), 0);
     }
 
     #[test]
     fn parse_naughty_host_file() {
         // Host file contains IP, Hosts, incorrect IPs, incorrect hosts
-        let mut opts = Opts::default();
-        opts.addresses = vec!["fixtures/naughty_string.txt".to_owned()];
+        let opts = Opts {
+            addresses: vec!["fixtures/naughty_string.txt".to_owned()],
+            ..Default::default()
+        };
+
         let ips = parse_addresses(&opts);
+
         assert_eq!(ips.len(), 0);
     }
 
     #[test]
     fn parse_duplicate_cidrs() {
-        let mut opts = Opts::default();
-        opts.addresses = vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()];
+        let opts = Opts {
+            addresses: vec!["79.98.104.0/21".to_owned(), "79.98.104.0/24".to_owned()],
+            ..Default::default()
+        };
 
         let ips = parse_addresses(&opts);
 
@@ -285,9 +373,11 @@ mod tests {
 
     #[test]
     fn resolver_args_google_dns() {
-        let mut opts = Opts::default();
         // https://developers.google.com/speed/public-dns
-        opts.resolver = Some("8.8.8.8,8.8.4.4".to_owned());
+        let opts = Opts {
+            resolver: Some("8.8.8.8,8.8.4.4".to_owned()),
+            ..Default::default()
+        };
 
         let resolver = get_resolver(&opts.resolver);
         let lookup = resolver.lookup_ip("www.example.com.").unwrap();
